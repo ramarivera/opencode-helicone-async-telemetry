@@ -12,7 +12,7 @@
  * ```
  */
 
-import type { Plugin } from '@opencode-ai/plugin';
+import type { Plugin, PluginInput } from '@opencode-ai/plugin';
 
 import { loadConfig, validateConfig } from './config/loader.ts';
 import type { PluginConfigInput } from './config/types.ts';
@@ -28,6 +28,15 @@ import { createToolCollector, type ToolCollector } from './telemetry/tool-collec
 import { createTranscriptBuilder, type TranscriptBuilder } from './telemetry/transcript-builder.ts';
 import { safeSessionName } from './utils/sanitize.ts';
 import { generateIdempotencyKey, sessionToUUID } from './utils/session-id.ts';
+
+/**
+ * Toast notification helper type.
+ */
+type ToastFn = (
+  message: string,
+  variant: 'info' | 'success' | 'warning' | 'error',
+  title?: string
+) => Promise<void>;
 
 /**
  * OpenCode event types we handle.
@@ -64,24 +73,61 @@ interface PluginState {
   heliconeLogger: HeliconeLogger;
   formatter: TranscriptFormatter;
   enabled: boolean;
+  showToast: ToastFn;
+}
+
+/**
+ * Create a toast helper from the client.
+ */
+function createToastHelper(client: PluginInput['client']): ToastFn {
+  return async (
+    message: string,
+    variant: 'info' | 'success' | 'warning' | 'error',
+    title?: string
+  ) => {
+    try {
+      await client.tui.showToast({
+        body: {
+          message,
+          variant,
+          title,
+          duration: variant === 'error' ? 8000 : 5000,
+        },
+      });
+    } catch {
+      // Silently ignore toast errors - don't break plugin flow
+    }
+  };
 }
 
 /**
  * Initialize the plugin state.
  */
-function initializeState(pluginConfig?: PluginConfigInput): PluginState | null {
+async function initializeState(
+  client: PluginInput['client'],
+  pluginConfig?: PluginConfigInput
+): Promise<PluginState | null> {
   const config = loadConfig(pluginConfig);
+  const showToast = createToastHelper(client);
 
   // Validate configuration
   const errors = validateConfig(config);
   if (errors.length > 0) {
-    for (const error of errors) {
-      // Use stderr to avoid breaking OpenCode
-      process.stderr.write(`[helicone-exporter] Config error: ${error}\n`);
-    }
+    // Show first error as toast
+    await showToast(errors[0], 'error', 'Helicone Config Error');
+    return null;
   }
 
-  if (!config.enabled || !config.apiKey) {
+  if (!config.enabled) {
+    return null;
+  }
+
+  if (!config.apiKey) {
+    await showToast(
+      'HELICONE_API_KEY is required. Set it in your environment.',
+      'warning',
+      'Helicone Disabled'
+    );
     return null;
   }
 
@@ -122,6 +168,7 @@ function initializeState(pluginConfig?: PluginConfigInput): PluginState | null {
     heliconeLogger,
     formatter,
     enabled: true,
+    showToast,
   };
 }
 
@@ -203,41 +250,50 @@ async function handleSessionIdle(state: PluginState): Promise<void> {
     retryCount: 0,
   };
 
-  await state.queueManager.enqueue(item);
+  const enqueued = await state.queueManager.enqueue(item);
+  if (enqueued) {
+    await state.showToast('Session transcript queued for Helicone export', 'info', 'Helicone');
+  }
 }
 
 /**
  * The main plugin export.
  */
-export const HeliconeAsyncTelemetryPlugin: Plugin = async () => {
+export const HeliconeAsyncTelemetryPlugin: Plugin = async ({ client }) => {
   let state: PluginState | null = null;
+  let initialized = false;
 
   return {
     /**
      * Handle OpenCode events.
      */
-    event: async ({ event }: { event: OpenCodeEvent }) => {
+    event: async ({ event }) => {
       // Lazy initialization on first event
-      if (!state) {
-        state = initializeState();
-        if (!state) return;
+      if (!initialized) {
+        initialized = true;
+        state = await initializeState(client);
       }
 
+      if (!state) return;
+
+      // Cast event to our expected type
+      const openCodeEvent = event as unknown as OpenCodeEvent;
+
       // Route events to handlers
-      switch (event.type) {
+      switch (openCodeEvent.type) {
         case 'session.created':
         case 'session.updated':
-          handleSessionEvent(state, event);
+          handleSessionEvent(state, openCodeEvent);
           break;
 
         case 'message.updated':
         case 'message.part.updated':
-          handleMessageEvent(state, event);
+          handleMessageEvent(state, openCodeEvent);
           break;
 
         case 'tool.execute.before':
         case 'tool.execute.after':
-          handleToolEvent(state, event);
+          handleToolEvent(state, openCodeEvent);
           break;
 
         case 'session.idle':
