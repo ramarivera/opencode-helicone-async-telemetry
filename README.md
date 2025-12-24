@@ -23,11 +23,11 @@ npm install opencode-helicone-async-telemetry
 
 ### Environment Variables
 
-| Variable                        | Required | Description                                                            |
-| ------------------------------- | -------- | ---------------------------------------------------------------------- |
-| `HELICONE_API_KEY`              | Yes      | Your Helicone API key                                                  |
-| `HELICONE_ENDPOINT`             | No       | Custom API endpoint (default: `https://api.hconeai.com/custom/v1/log`) |
-| `OPENCODE_HELICONE_EXPORT_MODE` | No       | Export mode: `full`, `metadata_only`, or `off` (default: `full`)       |
+| Variable                        | Required | Description                                                                   |
+| ------------------------------- | -------- | ----------------------------------------------------------------------------- |
+| `HELICONE_API_KEY`              | Yes      | Your Helicone API key                                                         |
+| `HELICONE_ENDPOINT`             | No       | Custom API endpoint (default: `https://api.worker.helicone.ai/custom/v1/log`) |
+| `OPENCODE_HELICONE_EXPORT_MODE` | No       | Export mode: `full`, `metadata_only`, or `off` (default: `full`)              |
 
 ### OpenCode Plugin Configuration
 

@@ -4,8 +4,8 @@
 
 import type { HeliconeExporterConfig } from './types.ts';
 
-/** Default Helicone API endpoint */
-export const DEFAULT_ENDPOINT = 'https://api.hconeai.com/custom/v1/log';
+/** Default Helicone API endpoint (matches @helicone/helpers default) */
+export const DEFAULT_ENDPOINT = 'https://api.worker.helicone.ai/custom/v1/log';
 
 /** Default flush interval: 30 seconds */
 export const DEFAULT_FLUSH_INTERVAL = 30_000;
