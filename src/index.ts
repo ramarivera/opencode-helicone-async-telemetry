@@ -39,26 +39,11 @@ type ToastFn = (
 ) => Promise<void>;
 
 /**
- * OpenCode event types we handle.
+ * OpenCode event - using loose typing to handle various event shapes.
  */
 interface OpenCodeEvent {
   type: string;
-  properties: {
-    info?: {
-      id: string;
-      title?: string;
-    };
-    sessionId?: string;
-    messageId?: string;
-    role?: string;
-    content?: string;
-    model?: string;
-    tool?: string;
-    args?: Record<string, unknown>;
-    result?: string;
-    error?: string;
-    [key: string]: unknown;
-  };
+  properties: Record<string, unknown>;
 }
 
 /**
@@ -159,6 +144,9 @@ async function initializeState(
   // Start queue manager
   queueManager.start();
 
+  // Show success toast
+  await showToast(`Exporting to ${config.endpoint}`, 'success', 'Helicone Enabled');
+
   return {
     sessionTracker,
     messageCollector,
@@ -173,24 +161,53 @@ async function initializeState(
 }
 
 /**
+ * Safely extract a string property from an object.
+ */
+function getString(obj: unknown, key: string): string | undefined {
+  if (obj && typeof obj === 'object' && key in obj) {
+    const value = (obj as Record<string, unknown>)[key];
+    return typeof value === 'string' ? value : undefined;
+  }
+  return undefined;
+}
+
+/**
  * Handle session events.
+ * Event structure: { type: 'session.created', properties: { info: { id, title, ... } } }
  */
 function handleSessionEvent(state: PluginState, event: OpenCodeEvent): void {
-  const info = event.properties.info;
+  const info = event.properties.info as Record<string, unknown> | undefined;
   if (!info) return;
 
+  const id = getString(info, 'id');
+  const title = getString(info, 'title');
+
+  if (!id) return;
+
   if (event.type === 'session.created') {
-    state.sessionTracker.onSessionCreated(info.id, info.title || '');
+    state.sessionTracker.onSessionCreated(id, title || '');
   } else if (event.type === 'session.updated') {
-    state.sessionTracker.onSessionUpdated(info.id, info.title);
+    state.sessionTracker.onSessionUpdated(id, title);
   }
 }
 
 /**
  * Handle message events.
+ * Event structure: { type: 'message.updated', properties: { info: { id, sessionID, role, ... } } }
  */
 function handleMessageEvent(state: PluginState, event: OpenCodeEvent): void {
-  const { sessionId, messageId, role, content, model } = event.properties;
+  const info = event.properties.info as Record<string, unknown> | undefined;
+  if (!info) return;
+
+  const messageId = getString(info, 'id');
+  const sessionId = getString(info, 'sessionID');
+  const role = getString(info, 'role');
+
+  // For model, check both modelID (assistant) and model.modelID (user)
+  let model: string | undefined = getString(info, 'modelID');
+  if (!model && info.model && typeof info.model === 'object') {
+    model = getString(info.model, 'modelID');
+  }
 
   if (!sessionId || !messageId || !role) return;
 
@@ -198,23 +215,55 @@ function handleMessageEvent(state: PluginState, event: OpenCodeEvent): void {
     messageId,
     sessionId,
     role as 'user' | 'assistant' | 'system' | 'tool',
-    content,
+    undefined, // Content comes from message parts, not message itself
     model
   );
 }
 
 /**
+ * Handle message part events.
+ * Event structure: { type: 'message.part.updated', properties: { info: { id, sessionID, messageID, type, text } } }
+ */
+function handleMessagePartEvent(state: PluginState, event: OpenCodeEvent): void {
+  const info = event.properties.info as Record<string, unknown> | undefined;
+  if (!info) return;
+
+  const messageId = getString(info, 'messageID');
+  const partType = getString(info, 'type');
+  const text = getString(info, 'text');
+
+  if (!messageId) return;
+
+  // Add text content to message
+  if (partType === 'text' && text) {
+    state.messageCollector.onPartUpdated(messageId, {
+      type: 'text',
+      content: text,
+      timestamp: Date.now(),
+    });
+  }
+}
+
+/**
  * Handle tool events.
+ * Event structure varies - need to check actual properties
  */
 function handleToolEvent(state: PluginState, event: OpenCodeEvent): void {
-  const { sessionId, messageId, tool, args, result, error } = event.properties;
+  const props = event.properties;
+  const sessionId = getString(props, 'sessionID');
+  const messageId = getString(props, 'messageID');
+  const tool = getString(props, 'tool');
 
   if (event.type === 'tool.execute.before') {
     if (!sessionId || !messageId || !tool) return;
 
+    const args = (props.args as Record<string, unknown>) || {};
     const toolCallId = `${messageId}-${tool}-${Date.now()}`;
-    state.toolCollector.onToolExecuteBefore(toolCallId, sessionId, messageId, tool, args || {});
+    state.toolCollector.onToolExecuteBefore(toolCallId, sessionId, messageId, tool, args);
   } else if (event.type === 'tool.execute.after') {
+    const result = getString(props, 'result');
+    const error = getString(props, 'error');
+
     // Find the most recent tool call for this tool
     const toolCalls = state.toolCollector.getToolCalls();
     const recentCall = toolCalls.filter((tc) => tc.name === tool && !tc.endTime).pop();
@@ -287,8 +336,11 @@ export const HeliconeAsyncTelemetryPlugin: Plugin = async ({ client }) => {
           break;
 
         case 'message.updated':
-        case 'message.part.updated':
           handleMessageEvent(state, openCodeEvent);
+          break;
+
+        case 'message.part.updated':
+          handleMessagePartEvent(state, openCodeEvent);
           break;
 
         case 'tool.execute.before':
