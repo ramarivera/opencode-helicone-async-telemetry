@@ -1,5 +1,14 @@
 # opencode-helicone-async-telemetry
 
+> **⚠️ EXPERIMENTAL - ARCHIVED**
+>
+> This project is **experimental and incomplete**. Testing could not be completed due to:
+>
+> - **Self-hosted Helicone**: The Docker images do not include the worker service required for the Manual Logger SDK (`/custom/v1/log` endpoint)
+> - **Helicone Cloud**: Restrictive free tier plans prevented full end-to-end testing
+>
+> The code is provided as-is for reference. Use at your own risk.
+
 An OpenCode plugin that exports session transcripts and LLM interaction data to [Helicone](https://helicone.ai) asynchronously using the Manual Logger SDK. No proxy or request interception required.
 
 ## Features
@@ -23,11 +32,11 @@ npm install opencode-helicone-async-telemetry
 
 ### Environment Variables
 
-| Variable                        | Required | Description                                                                   |
-| ------------------------------- | -------- | ----------------------------------------------------------------------------- |
-| `HELICONE_API_KEY`              | Yes      | Your Helicone API key                                                         |
-| `HELICONE_ENDPOINT`             | No       | Custom API endpoint (default: `https://api.worker.helicone.ai/custom/v1/log`) |
-| `OPENCODE_HELICONE_EXPORT_MODE` | No       | Export mode: `full`, `metadata_only`, or `off` (default: `full`)              |
+| Variable                        | Required | Description                                                                                                                   |
+| ------------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `HELICONE_API_KEY`              | Yes      | Your Helicone API key                                                                                                         |
+| `HELICONE_ENDPOINT`             | No       | Base URL for Helicone API (default: `https://api.worker.helicone.ai`). **Do not include `/custom/v1/log`** - the SDK adds it. |
+| `OPENCODE_HELICONE_EXPORT_MODE` | No       | Export mode: `full`, `metadata_only`, or `off` (default: `full`)                                                              |
 
 ### OpenCode Plugin Configuration
 
@@ -132,8 +141,13 @@ No actual message content or tool arguments are exported.
 ### Exports not appearing in Helicone
 
 1. Verify `HELICONE_API_KEY` is set correctly
-2. Check `.opencode/helicone-spool/` for pending items
-3. Look for error files with `.dead` extension (exceeded retries)
+2. Check `.opencode/helicone-spool/logs/plugin.log` for errors
+3. Check `.opencode/helicone-spool/` for pending items
+4. Look for error files with `.dead` extension (exceeded retries)
+
+### "Not Found" errors in logs
+
+The Manual Logger SDK requires Helicone's **worker** service (`/custom/v1/log` endpoint). Self-hosted Helicone Docker setups may not include this service. Use Helicone Cloud or ensure your self-hosted setup includes the worker.
 
 ### High memory usage
 
@@ -143,6 +157,12 @@ Reduce `maxSpoolSize` or `flushInterval` to flush more frequently.
 
 1. Add appropriate patterns to `redactPatterns`
 2. Switch to `metadata_only` mode for maximum privacy
+
+## Known Limitations
+
+- **Self-hosted Helicone**: The default Docker Compose setup does not include the worker service required for the Manual Logger SDK. The jawn API (`/v1/log/request`) uses a different schema.
+- **Helicone Cloud**: Requires a paid plan for full functionality. Free tier has significant limitations.
+- **No end-to-end testing**: Due to the above limitations, this plugin has not been fully tested against a working Helicone instance.
 
 ## Development
 

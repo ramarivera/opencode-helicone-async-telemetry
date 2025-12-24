@@ -4,8 +4,16 @@
 
 import type { HeliconeExporterConfig } from './types.ts';
 
-/** Default Helicone API endpoint (matches @helicone/helpers default) */
-export const DEFAULT_ENDPOINT = 'https://api.worker.helicone.ai/custom/v1/log';
+/**
+ * Default Helicone API endpoint base URL.
+ *
+ * NOTE: Do NOT include the path `/custom/v1/log` - the @helicone/helpers SDK
+ * automatically appends the appropriate path based on the provider.
+ *
+ * For self-hosted Helicone, use just the base URL, e.g.:
+ *   HELICONE_ENDPOINT=http://localhost:8585
+ */
+export const DEFAULT_ENDPOINT = 'https://api.worker.helicone.ai';
 
 /** Default flush interval: 30 seconds */
 export const DEFAULT_FLUSH_INTERVAL = 30_000;

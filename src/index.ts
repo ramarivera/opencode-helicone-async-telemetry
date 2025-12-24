@@ -16,6 +16,7 @@ import type { Plugin, PluginInput } from '@opencode-ai/plugin';
 
 import { loadConfig, validateConfig } from './config/loader.ts';
 import type { PluginConfigInput } from './config/types.ts';
+import { createLogger } from './logger.ts';
 import { createTranscriptFormatter, type TranscriptFormatter } from './exporter/formatter.ts';
 import { createHeliconeLogger, type HeliconeLogger } from './exporter/logger.ts';
 import { createContentFilter } from './privacy/filter.ts';
@@ -28,6 +29,9 @@ import { createToolCollector, type ToolCollector } from './telemetry/tool-collec
 import { createTranscriptBuilder, type TranscriptBuilder } from './telemetry/transcript-builder.ts';
 import { safeSessionName } from './utils/sanitize.ts';
 import { generateIdempotencyKey, sessionToUUID } from './utils/session-id.ts';
+
+// Create logger for the main plugin module
+const log = createLogger('index');
 
 /**
  * Toast notification helper type.
@@ -92,22 +96,39 @@ async function initializeState(
   client: PluginInput['client'],
   pluginConfig?: PluginConfigInput
 ): Promise<PluginState | null> {
+  log.info('Initializing Helicone async telemetry plugin...');
+
   const config = loadConfig(pluginConfig);
   const showToast = createToastHelper(client);
+
+  log.debug(
+    {
+      enabled: config.enabled,
+      endpoint: config.endpoint,
+      exportMode: config.exportMode,
+      flushInterval: config.flushInterval,
+      maxRetries: config.maxRetries,
+      hasApiKey: !!config.apiKey,
+    },
+    'Configuration loaded'
+  );
 
   // Validate configuration
   const errors = validateConfig(config);
   if (errors.length > 0) {
+    log.error({ errors }, 'Configuration validation failed');
     // Show first error as toast
     await showToast(errors[0], 'error', 'Helicone Config Error');
     return null;
   }
 
   if (!config.enabled) {
+    log.info('Plugin disabled via configuration');
     return null;
   }
 
   if (!config.apiKey) {
+    log.warn('No HELICONE_API_KEY provided, plugin disabled');
     await showToast(
       'HELICONE_API_KEY is required. Set it in your environment.',
       'warning',
@@ -143,9 +164,12 @@ async function initializeState(
 
   // Start queue manager
   queueManager.start();
+  log.info('Queue manager started');
 
   // Show success toast
   await showToast(`Exporting to ${config.endpoint}`, 'success', 'Helicone Enabled');
+
+  log.info({ endpoint: config.endpoint }, 'Plugin initialized successfully');
 
   return {
     sessionTracker,
@@ -177,17 +201,27 @@ function getString(obj: unknown, key: string): string | undefined {
  */
 function handleSessionEvent(state: PluginState, event: OpenCodeEvent): void {
   const info = event.properties.info as Record<string, unknown> | undefined;
-  if (!info) return;
+  if (!info) {
+    log.debug({ eventType: event.type }, 'Session event missing info property');
+    return;
+  }
 
   const id = getString(info, 'id');
   const title = getString(info, 'title');
 
-  if (!id) return;
+  if (!id) {
+    log.debug({ eventType: event.type, info }, 'Session event missing id');
+    return;
+  }
+
+  log.debug({ eventType: event.type, sessionId: id, title }, 'Handling session event');
 
   if (event.type === 'session.created') {
     state.sessionTracker.onSessionCreated(id, title || '');
+    log.info({ sessionId: id, title }, 'Session created');
   } else if (event.type === 'session.updated') {
     state.sessionTracker.onSessionUpdated(id, title);
+    log.debug({ sessionId: id, title }, 'Session updated');
   }
 }
 
@@ -197,7 +231,10 @@ function handleSessionEvent(state: PluginState, event: OpenCodeEvent): void {
  */
 function handleMessageEvent(state: PluginState, event: OpenCodeEvent): void {
   const info = event.properties.info as Record<string, unknown> | undefined;
-  if (!info) return;
+  if (!info) {
+    log.debug({ eventType: event.type }, 'Message event missing info property');
+    return;
+  }
 
   const messageId = getString(info, 'id');
   const sessionId = getString(info, 'sessionID');
@@ -209,7 +246,15 @@ function handleMessageEvent(state: PluginState, event: OpenCodeEvent): void {
     model = getString(info.model, 'modelID');
   }
 
-  if (!sessionId || !messageId || !role) return;
+  if (!sessionId || !messageId || !role) {
+    log.debug(
+      { eventType: event.type, messageId, sessionId, role },
+      'Message event missing required fields'
+    );
+    return;
+  }
+
+  log.debug({ messageId, sessionId, role, model }, 'Handling message event');
 
   state.messageCollector.onMessageUpdated(
     messageId,
@@ -226,16 +271,23 @@ function handleMessageEvent(state: PluginState, event: OpenCodeEvent): void {
  */
 function handleMessagePartEvent(state: PluginState, event: OpenCodeEvent): void {
   const info = event.properties.info as Record<string, unknown> | undefined;
-  if (!info) return;
+  if (!info) {
+    log.debug({ eventType: event.type }, 'Message part event missing info property');
+    return;
+  }
 
   const messageId = getString(info, 'messageID');
   const partType = getString(info, 'type');
   const text = getString(info, 'text');
 
-  if (!messageId) return;
+  if (!messageId) {
+    log.debug({ eventType: event.type, partType }, 'Message part event missing messageID');
+    return;
+  }
 
   // Add text content to message
   if (partType === 'text' && text) {
+    log.debug({ messageId, partType, textLength: text.length }, 'Adding text part to message');
     state.messageCollector.onPartUpdated(messageId, {
       type: 'text',
       content: text,
@@ -255,10 +307,17 @@ function handleToolEvent(state: PluginState, event: OpenCodeEvent): void {
   const tool = getString(props, 'tool');
 
   if (event.type === 'tool.execute.before') {
-    if (!sessionId || !messageId || !tool) return;
+    if (!sessionId || !messageId || !tool) {
+      log.debug(
+        { eventType: event.type, sessionId, messageId, tool },
+        'Tool before event missing fields'
+      );
+      return;
+    }
 
     const args = (props.args as Record<string, unknown>) || {};
     const toolCallId = `${messageId}-${tool}-${Date.now()}`;
+    log.debug({ toolCallId, sessionId, messageId, tool }, 'Tool execution started');
     state.toolCollector.onToolExecuteBefore(toolCallId, sessionId, messageId, tool, args);
   } else if (event.type === 'tool.execute.after') {
     const result = getString(props, 'result');
@@ -269,7 +328,13 @@ function handleToolEvent(state: PluginState, event: OpenCodeEvent): void {
     const recentCall = toolCalls.filter((tc) => tc.name === tool && !tc.endTime).pop();
 
     if (recentCall) {
+      log.debug(
+        { toolCallId: recentCall.id, tool, hasResult: !!result, hasError: !!error },
+        'Tool execution completed'
+      );
       state.toolCollector.onToolExecuteAfter(recentCall.id, result || '', error);
+    } else {
+      log.debug({ tool, error }, 'Tool after event without matching before event');
     }
   }
 }
@@ -278,10 +343,27 @@ function handleToolEvent(state: PluginState, event: OpenCodeEvent): void {
  * Handle session idle - trigger export.
  */
 async function handleSessionIdle(state: PluginState): Promise<void> {
-  if (!state.transcriptBuilder.hasData()) return;
+  log.debug('Session idle event received, checking for data to export');
+
+  if (!state.transcriptBuilder.hasData()) {
+    log.debug('No data to export');
+    return;
+  }
 
   const transcript = state.transcriptBuilder.build();
-  if (!transcript) return;
+  if (!transcript) {
+    log.debug('Transcript builder returned null');
+    return;
+  }
+
+  log.info(
+    {
+      sessionId: transcript.session.id,
+      messageCount: transcript.messages.length,
+      toolCallCount: transcript.toolCalls.length,
+    },
+    'Building export item from transcript'
+  );
 
   // Format and enqueue
   const { request, response } = state.formatter.format(transcript);
@@ -299,9 +381,14 @@ async function handleSessionIdle(state: PluginState): Promise<void> {
     retryCount: 0,
   };
 
+  log.debug({ itemId: item.id, sessionId: item.sessionId }, 'Enqueuing item');
+
   const enqueued = await state.queueManager.enqueue(item);
   if (enqueued) {
+    log.info({ itemId: item.id, sessionId: item.sessionId }, 'Item enqueued for export');
     await state.showToast('Session transcript queued for Helicone export', 'info', 'Helicone');
+  } else {
+    log.debug({ itemId: item.id }, 'Item already in queue (idempotency check)');
   }
 }
 
@@ -312,45 +399,69 @@ export const HeliconeAsyncTelemetryPlugin: Plugin = async ({ client }) => {
   let state: PluginState | null = null;
   let initialized = false;
 
+  log.debug('Plugin factory called');
+
   return {
     /**
      * Handle OpenCode events.
+     *
+     * IMPORTANT: This handler MUST NOT throw exceptions or use console.log/console.error
+     * as it will corrupt the OpenCode TUI. All errors are caught and logged via pino.
      */
     event: async ({ event }) => {
-      // Lazy initialization on first event
-      if (!initialized) {
-        initialized = true;
-        state = await initializeState(client);
-      }
+      try {
+        // Lazy initialization on first event
+        if (!initialized) {
+          initialized = true;
+          log.debug('First event received, initializing plugin state');
+          state = await initializeState(client);
+        }
 
-      if (!state) return;
+        if (!state) return;
 
-      // Cast event to our expected type
-      const openCodeEvent = event as unknown as OpenCodeEvent;
+        // Cast event to our expected type
+        const openCodeEvent = event as unknown as OpenCodeEvent;
 
-      // Route events to handlers
-      switch (openCodeEvent.type) {
-        case 'session.created':
-        case 'session.updated':
-          handleSessionEvent(state, openCodeEvent);
-          break;
+        log.trace({ eventType: openCodeEvent.type }, 'Event received');
 
-        case 'message.updated':
-          handleMessageEvent(state, openCodeEvent);
-          break;
+        // Route events to handlers
+        switch (openCodeEvent.type) {
+          case 'session.created':
+          case 'session.updated':
+            handleSessionEvent(state, openCodeEvent);
+            break;
 
-        case 'message.part.updated':
-          handleMessagePartEvent(state, openCodeEvent);
-          break;
+          case 'message.updated':
+            handleMessageEvent(state, openCodeEvent);
+            break;
 
-        case 'tool.execute.before':
-        case 'tool.execute.after':
-          handleToolEvent(state, openCodeEvent);
-          break;
+          case 'message.part.updated':
+            handleMessagePartEvent(state, openCodeEvent);
+            break;
 
-        case 'session.idle':
-          await handleSessionIdle(state);
-          break;
+          case 'tool.execute.before':
+          case 'tool.execute.after':
+            handleToolEvent(state, openCodeEvent);
+            break;
+
+          case 'session.idle':
+            await handleSessionIdle(state);
+            break;
+
+          default:
+            log.trace({ eventType: openCodeEvent.type }, 'Unhandled event type');
+        }
+      } catch (error) {
+        // CRITICAL: Never let exceptions escape the event handler.
+        // Log the error but do not rethrow - this prevents TUI corruption.
+        log.error(
+          {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined,
+            eventType: (event as unknown as OpenCodeEvent)?.type,
+          },
+          'Unhandled error in event handler'
+        );
       }
     },
   };

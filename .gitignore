@@ -10,3 +10,6 @@ coverage/
 .bun/
 .bun.lockb
 .memory/
+
+# Plugin spool and logs (runtime data)
+.opencode/helicone-spool/logs/
